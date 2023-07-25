@@ -1,0 +1,536 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  KeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: 'test'
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the ECS instances.
+  DesiredCapacity:
+    Type: Number
+    Default: '1'
+    Description: Number of instances to launch in your ECS cluster.
+  MaxSize:
+    Type: Number
+    Default: '1'
+    Description: Maximum number of instances that can be launched in your ECS cluster.
+
+  DBName:
+    Type: String
+    Default: postgres
+  DBUsername:
+    Type: String
+    Default: masteruser
+  DBPassword:
+    Type: String
+    Default: masterpassword
+  Environment:
+    Type: String
+    Default: evaluation
+
+Mappings:
+  # ECS AMIs by region
+  AWSRegionToAMI:
+    us-east-1:
+      AMIID: ami-09bee01cc997a78a6
+    us-east-2:
+      AMIID: ami-0a9e12068cb98a01d
+    us-west-1:
+      AMIID: ami-0fa6c8d131a220017
+    us-west-2:
+      AMIID: ami-078c97cf1cefd1b38
+    eu-west-1:
+      AMIID: ami-0c9ef930279337028
+    eu-central-1:
+      AMIID: ami-065c1e34da68f2b02
+    ap-northeast-1:
+      AMIID: ami-02265963d1614d04d
+    ap-southeast-1:
+      AMIID: ami-0b68661b29b9e058c
+    ap-southeast-2:
+      AMIID: ami-00e4b147599c13588
+
+Resources:
+  # Create VPC stuff
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 192.168.0.0/16
+      EnableDnsHostnames: true
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: VPC
+      InternetGatewayId:
+        Ref: InternetGateway
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachInternetGateway
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+
+
+  # Make subnets
+  publicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 192.168.1.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: True
+  publicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 192.168.2.0/24
+      AvailabilityZone: us-east-1b
+      MapPublicIpOnLaunch: True
+  PublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      SubnetId:
+        Ref: publicSubnet1
+  PublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      SubnetId:
+        Ref: publicSubnet2
+  privateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 192.168.11.0/24
+      AvailabilityZone: us-east-1a
+  privateSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: 192.168.12.0/24
+      AvailabilityZone: us-east-1b
+
+  # Make DB
+  DBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: rds
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: '0.0.0.0/0'
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: 'Private subnets'
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+
+  DBInstance:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: 'postgres'
+      EngineVersion: '14.4'
+      DBInstanceClass: 'db.t3.micro'
+      AllocatedStorage: 20
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+
+##  # Make redis
+##  ElastiCache:
+##    Type: AWS::ElastiCache::SubnetGroup
+##    Properties:
+##      CacheSubnetGroupName: redis-subnets
+##      Description: Redis subnet group
+##      SubnetIds:
+##        - !Ref privateSubnet1
+##        - !Ref privateSubnet2
+##  CacheSecurityGroup:
+##    Type: 'AWS::EC2::SecurityGroup'
+##    Properties:
+##      GroupDescription: cache
+##      VpcId: !Ref VPC
+##      SecurityGroupIngress:
+##        - IpProtocol: tcp
+##          FromPort: 6379
+##          ToPort: 6379
+##          CidrIp: '0.0.0.0/0'
+##  ElasticacheCluster:
+##    Type: 'AWS::ElastiCache::CacheCluster'
+##    Properties:
+##      Engine: redis
+##      CacheNodeType: cache.t3.micro
+##      NumCacheNodes: '1'
+##      CacheSubnetGroupName: !Ref ElastiCache
+##      VpcSecurityGroupIds:
+##        - !Ref CacheSecurityGroup
+
+  # ECS cluster
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+  EcsSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: ECS Security Group
+      VpcId: !Ref VPC
+  EcsSecurityGroupHTTPinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupP8000inbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupSSHinbound:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: 0.0.0.0/0
+  EcsSecurityGroupALBports:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !Ref EcsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 31000
+      ToPort: 61000
+      SourceSecurityGroupId: !Ref EcsSecurityGroup
+  # ECS roles
+  ECSServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+                  - 'elasticloadbalancing:DeregisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+                  - 'elasticloadbalancing:RegisterTargets'
+                  - 'ec2:Describe*'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
+                Resource: '*'
+  EC2Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecs-service
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ecs:CreateCluster'
+                  - 'ecs:DeregisterContainerInstance'
+                  - 'ecs:DiscoverPollEndpoint'
+                  - 'ecs:Poll'
+                  - 'ecs:RegisterContainerInstance'
+                  - 'ecs:StartTelemetrySession'
+                  - 'ecs:Submit*'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+  EC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+  # ALB and ASG
+  ECSALB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: ECSALB
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Subnets:
+        - !Ref publicSubnet1
+        - !Ref publicSubnet2
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+  ALBListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    DependsOn: ECSServiceRole
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTG
+      LoadBalancerArn: !Ref ECSALB
+      Port: '80'
+      Protocol: HTTP
+  ECSALBListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    DependsOn: ALBListener
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTG
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+  ECSTG:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    DependsOn: ECSALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: ECSTG
+      Port: 8000
+      Protocol: HTTP
+      Matcher:
+        HttpCode: "200-399"
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+  ECSAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref publicSubnet1
+        - !Ref publicSubnet2
+      LaunchConfigurationName: !Ref ContainerInstances
+      MinSize: '0'
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  ContainerInstances:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: !FindInMap
+        - AWSRegionToAMI
+        - !Ref 'AWS::Region'
+        - AMIID
+      SecurityGroups:
+        - !Ref EcsSecurityGroup
+      InstanceType: t3.micro
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !Ref KeyName
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - echo ECS_CLUSTER=
+            - !Ref ECSCluster
+            - |2
+               >> /etc/ecs/ecs.config
+            - |
+              yum install -y aws-cfn-bootstrap
+            - |
+              echo "127.0.0.1 redis" >> /etc/hosts
+            - |
+              mkdir -p /opt/media && chown 1001:1001 /opt/media
+            - '/opt/aws/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource ECSAutoScalingGroup '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+  # Task definition and service
+  UITaskdefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join
+        - ''
+        - - !Ref 'AWS::StackName'
+          - '-ecs-papermerge-app'
+      NetworkMode: host
+      ContainerDefinitions:
+        - Name: papermerge-app
+          Essential: 'true'
+          Image: 'eugenci/papermerge:2.0.0'
+          Memory: 256
+          MountPoints:
+            - ContainerPath: /opt/media
+              SourceVolume: media_root
+          PortMappings:
+            - ContainerPort: 8000
+              HostPort: 8000
+          Environment:
+            - Name: POSTGRES_HOST
+              Value: !GetAtt DBInstance.Endpoint.Address
+            - Name: POSTGRES_PORT
+              Value: !GetAtt DBInstance.Endpoint.Port
+            - Name: POSTGRES_DB
+              Value: !Ref DBName
+            - Name: POSTGRES_USER
+              Value: !Ref DBUsername
+            - Name: POSTGRES_PASSWORD
+              Value: !Ref DBPassword
+      Volumes:
+        - Name: media_root
+          Host:
+            SourcePath: "/opt/media"
+
+  WorkerTaskdefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join
+        - ''
+        - - !Ref 'AWS::StackName'
+          - '-ecs-papermerge-worker'
+      NetworkMode: host
+      ContainerDefinitions:
+        - Name: papermerge-worker
+          Image: 'eugenci/papermerge-worker:v2.0.0'
+          Memory: 256
+          Environment:
+            - Name: POSTGRES_HOST
+              Value: !GetAtt DBInstance.Endpoint.Address
+            - Name: POSTGRES_PORT
+              Value: !GetAtt DBInstance.Endpoint.Port
+            - Name: POSTGRES_DB
+              Value: !Ref DBName
+            - Name: POSTGRES_USER
+              Value: !Ref DBUsername
+            - Name: POSTGRES_PASSWORD
+              Value: !Ref DBPassword
+          Essential: True
+          MountPoints:
+            - ContainerPath: /opt/media
+              SourceVolume: media_root
+      Volumes:
+        - Name: media_root
+          Host:
+            SourcePath: "/opt/media"
+
+  RedisTaskdefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Join
+        - ''
+        - - !Ref 'AWS::StackName'
+          - '-ecs-papermerge-redis'
+      NetworkMode: host
+      ContainerDefinitions:
+        - Name: papermerge-redis
+          Image: 'redis:6'
+          Memory: 256
+          Essential: True
+          MountPoints:
+            - ContainerPath: /data
+              SourceVolume: redis
+      Volumes:
+        - Name: redis
+
+  Service:
+    Type: 'AWS::ECS::Service'
+    DependsOn: ALBListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref DesiredCapacity
+      LoadBalancers:
+        - ContainerName: papermerge-app
+          ContainerPort: '8000'
+          TargetGroupArn: !Ref ECSTG
+      Role: !Ref ECSServiceRole
+      TaskDefinition: !Ref UITaskdefinition
+
+  WorkerService:
+    Type: 'AWS::ECS::Service'
+    DependsOn: ALBListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref DesiredCapacity
+      TaskDefinition: !Ref WorkerTaskdefinition
+
+  RedisService:
+    Type: 'AWS::ECS::Service'
+    DependsOn: ALBListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref DesiredCapacity
+      TaskDefinition: !Ref RedisTaskdefinition
+
+
+Outputs:
+  DBInstanceArn:
+    Value: !GetAtt DBInstance.DBInstanceArn
+    Export:
+      Name: !Sub "${AWS::StackName}-DBInstanceArn"
+  ECSClusterArn:
+    Value: !GetAtt ECSCluster.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ECSClusterArn"
+  WebUIServiceArn:
+    Value: !GetAtt Service.ServiceArn
+    Export:
+      Name: !Sub "${AWS::StackName}-WebUIServiceArn"
+  WorkerServiceArn:
+    Value: !GetAtt WorkerService.ServiceArn
+    Export:
+      Name: !Sub "${AWS::StackName}-WorkerServiceArn"
+  RedisServiceArn:
+    Value: !GetAtt RedisService.ServiceArn
+    Export:
+      Name: !Sub "${AWS::StackName}-RedisServiceArn"
