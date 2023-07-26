@@ -534,3 +534,7 @@ Outputs:
     Value: !GetAtt RedisService.ServiceArn
     Export:
       Name: !Sub "${AWS::StackName}-RedisServiceArn"
+  ServiceDns:
+    Value: !GetAtt ECSALB.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-ECSALBDns"
