@@ -55,3 +55,5 @@ To deploy application from scratch(blank application):
 $ ./control.sh --deploy
 ```
 
+### Acknowledgments:
+Pipeline code is a courtesy of [symphoniacloud/github-codepipeline](https://github.com/symphoniacloud/github-codepipeline) by [mikebroberts](https://github.com/mikebroberts).
