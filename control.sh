@@ -178,6 +178,14 @@ while [[ $# -gt 0 ]]; do
       status
       shift # past argument
       ;;
+    --deploy)
+      deploy
+      shift # past argument
+      ;;
+    --destroy)
+      destroy
+      shift # past argument
+      ;;
     -*|--*)
       echo "Unknown option $1"
       exit 1
